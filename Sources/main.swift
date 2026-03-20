@@ -143,8 +143,8 @@ let activity = ProcessInfo.processInfo.beginActivity(
 )
 
 let normalInterval: TimeInterval = 10
-let aggressiveInterval: TimeInterval = 2   // 开机前 2 分钟快速轮询
-let aggressiveDuration: TimeInterval = 120
+let aggressiveInterval: TimeInterval = 1   // 开机前 5 分钟每秒轮询
+let aggressiveDuration: TimeInterval = 300
 let appScanInterval: TimeInterval = 300
 let startTime = Date()
 var knownUnpatchedApps = Set<String>()
@@ -184,6 +184,23 @@ print("  问题: Electron _cornerMask 覆写导致 macOS 26 WindowServer 高负�
 print("  方案: 自动检测未修复应用并禁用其窗口阴影")
 print("  轮询: \(Int(aggressiveInterval))s (开机 \(Int(aggressiveDuration))s 内) → \(Int(normalInterval))s | 应用扫描: \(Int(appScanInterval))s")
 print("")
+
+// 等待 WindowServer 就绪（开机时 LaunchAgent 可能在 GUI session 建立前就启动）
+var wsReady = false
+for i in 1...30 {
+    let cid = CGSMainConnectionID()
+    let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+    if cid != 0 && !list.isEmpty {
+        wsReady = true
+        if i > 1 { log("WindowServer 就绪 (等待了 \(i)s)") }
+        break
+    }
+    log("等待 WindowServer 就绪... (\(i)/30)")
+    Thread.sleep(forTimeInterval: 1)
+}
+if !wsReady {
+    log("警告: WindowServer 可能未完全就绪，继续运行")
+}
 
 tick()
 

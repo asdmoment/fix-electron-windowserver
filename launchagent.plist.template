@@ -17,6 +17,6 @@
     <key>StandardErrorPath</key>
     <string>__LOG_PATH__</string>
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Adaptive</string>
 </dict>
 </plist>
