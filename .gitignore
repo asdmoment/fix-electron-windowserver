@@ -1,0 +1,4 @@
+fix-electron-windowserver
+*.log
+.DS_Store
+.build/
