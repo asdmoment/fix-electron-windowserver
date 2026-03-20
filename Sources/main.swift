@@ -136,8 +136,17 @@ func log(_ message: String) {
 
 setlinebuf(stdout)
 
-let windowCheckInterval: TimeInterval = 10
+// 禁用 App Nap，防止 macOS 在开机期间节流定时器
+let activity = ProcessInfo.processInfo.beginActivity(
+    options: .userInitiated,
+    reason: "Monitoring Electron window shadows"
+)
+
+let normalInterval: TimeInterval = 10
+let aggressiveInterval: TimeInterval = 2   // 开机前 2 分钟快速轮询
+let aggressiveDuration: TimeInterval = 120
 let appScanInterval: TimeInterval = 300
+let startTime = Date()
 var knownUnpatchedApps = Set<String>()
 var lastAppScan: Date = .distantPast
 
@@ -173,10 +182,48 @@ func tick() {
 print("fix-electron-windowserver")
 print("  问题: Electron _cornerMask 覆写导致 macOS 26 WindowServer 高负载")
 print("  方案: 自动检测未修复应用并禁用其窗口阴影")
-print("  窗口检查间隔: \(Int(windowCheckInterval))s | 应用扫描间隔: \(Int(appScanInterval))s")
+print("  轮询: \(Int(aggressiveInterval))s (开机 \(Int(aggressiveDuration))s 内) → \(Int(normalInterval))s | 应用扫描: \(Int(appScanInterval))s")
 print("")
 
 tick()
 
-Timer.scheduledTimer(withTimeInterval: windowCheckInterval, repeats: true) { _ in tick() }
+// 开机阶段快速轮询，之后切换为正常间隔
+var currentTimer: Timer?
+
+func scheduleTimer(interval: TimeInterval) {
+    currentTimer?.invalidate()
+    currentTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
+        tick()
+        if interval == aggressiveInterval && Date().timeIntervalSince(startTime) >= aggressiveDuration {
+            log("启动期结束，轮询间隔切换为 \(Int(normalInterval))s")
+            scheduleTimer(interval: normalInterval)
+        }
+    }
+}
+
+scheduleTimer(interval: aggressiveInterval)
+
+// 监听应用启动事件，检测到未修复应用立即轮询其窗口
+NSWorkspace.shared.notificationCenter.addObserver(
+    forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
+) { notif in
+    guard let app = notif.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+          let name = app.localizedName,
+          knownUnpatchedApps.contains(name) else { return }
+
+    log("检测到启动: \(name)，开始快速轮询窗口")
+    var attempts = 0
+    Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+        attempts += 1
+        let windows = getWindowsForApps(Set([name]))
+        if !windows.isEmpty {
+            disableShadows(for: windows)
+            log("已修复 \(name) 的 \(windows.count) 个窗口 (启动后 \(attempts)s)")
+            timer.invalidate()
+        } else if attempts >= 30 {
+            timer.invalidate()
+        }
+    }
+}
+
 RunLoop.current.run()
