@@ -127,9 +127,31 @@ func disableShadows(for windows: [(wid: Int32, owner: String)]) {
 
 // MARK: - Logging
 
+let logFilePath = CommandLine.arguments.first.map {
+    URL(fileURLWithPath: $0).deletingLastPathComponent().appendingPathComponent("fix-electron-windowserver.log").path
+} ?? ""
+let maxLogSize: UInt64 = 512 * 1024  // 512 KB
+
 func log(_ message: String) {
     let ts = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
     print("[\(ts)] \(message)")
+}
+
+/// 日志文件超过 maxLogSize 时，保留最后一半内容
+func rotateLogIfNeeded() {
+    guard !logFilePath.isEmpty else { return }
+    let fm = FileManager.default
+    guard let attrs = try? fm.attributesOfItem(atPath: logFilePath),
+          let size = attrs[.size] as? UInt64,
+          size > maxLogSize else { return }
+    guard let data = fm.contents(atPath: logFilePath) else { return }
+    let keepFrom = data.count / 2
+    // 找到 keepFrom 之后的第一个换行，避免截断半行
+    if let newlineIdx = data[keepFrom...].firstIndex(of: UInt8(ascii: "\n")) {
+        let trimmed = data[(newlineIdx + 1)...]
+        try? trimmed.write(to: URL(fileURLWithPath: logFilePath))
+        log("日志已滚动清理 (\(size / 1024)KB → \(trimmed.count / 1024)KB)")
+    }
 }
 
 // MARK: - Main
@@ -150,6 +172,8 @@ let startTime = Date()
 var knownUnpatchedApps = Set<String>()
 var lastAppScan: Date = .distantPast
 
+var previousUnpatchedNames = Set<String>()
+
 func refreshAppListIfNeeded() {
     let now = Date()
     guard now.timeIntervalSince(lastAppScan) >= appScanInterval else { return }
@@ -159,13 +183,28 @@ func refreshAppListIfNeeded() {
     knownUnpatchedApps = Set(unpatched.keys)
 
     if unpatched.isEmpty {
-        log("扫描完成: 未发现需要修复的 Electron 应用")
-    } else {
+        if !previousUnpatchedNames.isEmpty {
+            log("扫描完成: 未发现需要修复的 Electron 应用")
+        }
+    } else if knownUnpatchedApps != previousUnpatchedNames {
+        // 应用列表有变化时才打印完整列表
         log("扫描完成: 发现 \(unpatched.count) 个未修复的 Electron 应用:")
         for (name, ver) in unpatched.sorted(by: { $0.key < $1.key }) {
             print("  - \(name) (Electron \(ver))")
         }
+        // 列出当前有窗口且已处理的应用
+        let runningPatched = knownUnpatchedApps.filter { name in
+            !getWindowsForApps(Set([name])).isEmpty
+        }
+        if !runningPatched.isEmpty {
+            log("其中已在运行且阴影已禁用: \(runningPatched.sorted().joined(separator: ", "))")
+        }
     }
+    // 列表无变化时静默跳过，不刷屏
+
+    previousUnpatchedNames = knownUnpatchedApps
+
+    rotateLogIfNeeded()
 }
 
 func tick() {
