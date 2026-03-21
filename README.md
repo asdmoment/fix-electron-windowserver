@@ -4,31 +4,46 @@
 
 ## 问题背景
 
-macOS 26 Tahoe 改变了 WindowServer 对窗口 corner mask 的处理方式。AppKit 通过检查 `_cornerMask` 方法的实现者来决定是否使用共享缓存：
+macOS 26 Tahoe 改变了 WindowServer 对窗口 corner mask 的处理方式。AppKit 通过**方法身份检查（method identity check）**决定是否缓存窗口圆角遮罩：
 
-- 系统标准实现 → 使用共享缓存，mask 视为静态
-- 子类覆写 → 标记为自定义，**每个窗口每帧重新渲染** → 持续高负载
+- 系统默认实现 → 使用共享缓存，mask 视为静态
+- 子类覆写（即使只是调用 super）→ 标记为自定义，**每个窗口每帧重新渲染** → 持续高负载
 
-Electron 的 `ElectronNSWindow` 恰好覆写了 `_cornerMask`（即使只是调用 super），导致 WindowServer 对每个 Electron 窗口做动态合成。
+Electron 的 `ElectronNSWindow` 覆写了私有 API `_cornerMask`（用于自定义 vibrant 窗口的圆角遮罩），触发了 WindowServer 的动态合成路径。
 
 **典型症状：**
 - WindowServer 进程 CPU 占用 30%–100%
-- 系统全局卡顿掉帧，拖动窗口、滚动页面不流畅
+- 系统全局卡顿掉帧
 - 最小化所有 Electron 应用后恢复正常
 - 使用时间越长越卡
 
-**上游修复：** [electron/electron#48376](https://github.com/electron/electron/pull/48376)，已合入 Electron 36.9.2 / 37.6.0 / 38.2.0 / 39.0.0+。但大量应用仍在使用旧版 Electron，短期内无法得到更新。
+**上游修复：** [electron/electron#48376](https://github.com/electron/electron/pull/48376)，已合入 Electron 36.9.2 / 37.6.0 / 38.2.0 / 39.0.0+。但大量应用仍在使用旧版 Electron。
+
+**注意：Chrome 浏览器不受此 bug 影响。** Chrome 使用 Chromium 的 `NativeWidgetMacNSWindow`，没有 Electron 的 `ElectronNSWindow` 层，不覆写 `_cornerMask`。
+
+## 工作原理
+
+本工具通过 **DYLD_INSERT_LIBRARIES 注入** 在 Electron 应用启动时加载一个微型 dylib，从根源修复问题：
+
+1. dylib 在加载时（`__attribute__((constructor))`）检查当前进程是否存在 `ElectronNSWindow` 类
+2. 如果存在且直接覆写了 `_cornerMask`，将其实现替换为父类（NSWindow）的默认实现
+3. 恢复 AppKit 的缓存优化，WindowServer 不再逐帧重新渲染 corner mask
+4. 对非 Electron 进程、已修复版本、Chrome 浏览器完全无操作
+
+注入方式是修改每个未修复 Electron 应用的 `Info.plist`，添加 `LSEnvironment.DYLD_INSERT_LIBRARIES`。对于启用了 hardened runtime 但缺少 `allow-dyld-environment-variables` entitlement 的应用，脚本会自动提取现有 entitlements、添加该权限并重签名。
+
+与之前基于 `CGSSetWindowShadowAndRimParameters` 的外部阴影禁用方案不同，本方案：
+- **从根源修复**：移除 `_cornerMask` override，而不是试图关闭阴影
+- **窗口阴影保留**：不影响视觉效果
+- **无需常驻守护进程**：修改一次 Info.plist 即可持久生效，无需轮询
+- **精确控制**：仅影响未修复的 Electron 应用
 
 ## 另一个独立的 Tahoe 卡顿问题
 
-macOS 26 Tahoe 还存在另一条与本项目 **无关** 的卡顿问题：`NSAutoFillHeuristicController` 可能在长时间运行后导致 Chrome、Zed、Ghostty、VS Code 一类文本/滚动密集应用逐渐变卡。
-
-这条问题不是 Electron `_cornerMask` / WindowServer 阴影 bug，本工具也不会自动处理它。
+macOS 26 Tahoe 还存在另一条与本项目 **无关** 的卡顿问题：`NSAutoFillHeuristicController` 可能在长时间运行后导致 Chrome、Zed、Ghostty、VS Code 等文本密集应用逐渐变卡。
 
 **参考：**
-
 - [zed-industries/zed#33182 comment 3289846957](https://github.com/zed-industries/zed/issues/33182#issuecomment-3289846957)
-- [Hacker News discussion: GPU load bug and Autofill bug are separate issues](https://news.ycombinator.com/item?id=45376977)
 - [ghostty-org/ghostty#8625](https://github.com/ghostty-org/ghostty/pull/8625)
 
 **全局 workaround：**
@@ -37,103 +52,86 @@ macOS 26 Tahoe 还存在另一条与本项目 **无关** 的卡顿问题：`NSAu
 defaults write -g NSAutoFillHeuristicControllerEnabled -bool false
 ```
 
-说明：
+写入一次即可持久生效。建议执行后注销或重启，让新会话生效。可能影响自动填充体验。
 
-- 这是一个全局 `NSUserDefaults` 设置，**写入一次即可持久生效**，不需要每次开机都重新运行
-- 更稳妥的做法是执行后 **注销或重启一次**，让新会话里的 AppKit 进程重新读取该设置
-- 这个设置会关闭相关的自动填充启发式逻辑，可能影响短信验证码 / OTP / 联系人 / 密码等自动填充体验
-
-**恢复默认：**
-
-```bash
-defaults delete -g NSAutoFillHeuristicControllerEnabled
-```
-
-## 工作原理
-
-1. 每 5 分钟扫描 `/Applications` 目录，从 Electron Framework 二进制中提取版本号
-2. 识别出使用未修复版本（< 36.9.2 / 37.6.0 / 38.2.0 / 39.0.0）的应用
-3. 检查这些应用的窗口，通过 CoreGraphics 私有 API 禁用窗口阴影
-4. 监听应用启动事件（`NSWorkspace` 通知），检测到未修复应用启动后立即每秒轮询其窗口
-5. **开机前 5 分钟每 1 秒轮询**，之后自动切换为每 10 秒
-6. 启动时等待 WindowServer 就绪（最多 30 秒），确保在 GUI session 建立后才开始工作
-7. 禁用 App Nap，防止 macOS 在开机期间节流定时器
-8. 新安装的 Electron 应用会在下次扫描时自动识别
-9. **日志自动滚动清理**：日志文件超过 512KB 时自动截断保留后半部分，防止无限增长
-10. **静默扫描**：应用列表无变化时不重复输出，减少日志噪音
-
-### LaunchAgent 配置
-
-- `RunAtLoad: true` — 开机自动启动
-- `KeepAlive: true` — 崩溃后自动重启
-- `ProcessType: Adaptive` — 允许系统根据负载动态调度优先级，比 Background 更快获得 CPU 时间片，确保开机早期能及时修复窗口
+恢复默认：`defaults delete -g NSAutoFillHeuristicControllerEnabled`
 
 ## 系统要求
 
 - macOS 26 Tahoe
 - Apple Silicon 或 Intel Mac
-- Xcode Command Line Tools（用于编译）
+- Xcode Command Line Tools（用于编译 dylib）
 
 ## 安装
 
 ```bash
 git clone https://github.com/asdmoment/fix-electron-windowserver.git
 cd fix-electron-windowserver
-make install
+make install        # 编译 dylib 并安装到 ~/.local/bin/
+make apply          # 扫描并修补所有未修复的 Electron 应用
 ```
 
-默认安装到 `/usr/local/bin`，可通过 `PREFIX` 自定义：
+自定义安装路径：
 
 ```bash
-make install PREFIX=$HOME/.local
+make install PREFIX=/usr/local
 ```
-
-安装后自动以 LaunchAgent 方式运行，开机自启动。
 
 ## 使用
 
 ```bash
-# 查看运行状态
+# 扫描未修复的 Electron 应用（不修改）
 make status
 
-# 查看实时日志
-make log
+# 应用补丁（扫描 + 注入 + 重签名）
+make apply
 
-# 停止
-make stop
+# 强制重新应用（app 更新后使用）
+fix-electron-cornermask-apply.sh --force
 
-# 启动
-make start
+# 完全移除所有注入
+fix-electron-cornermask-apply.sh --remove
 
-# 重启
-make restart
-
-# 卸载
+# 卸载工具
 make uninstall
 ```
 
-日志输出示例：
+输出示例：
 
 ```
-fix-electron-windowserver
-  问题: Electron _cornerMask 覆写导致 macOS 26 WindowServer 高负载
-  方案: 自动检测未修复应用并禁用其窗口阴影
-  轮询: 1s (开机 300s 内) → 10s | 应用扫描: 300s
+fix-electron-cornermask-apply
+  dylib: /Users/you/.local/bin/fix-electron-cornermask.dylib
 
-[5:51:55 PM] 扫描完成: 发现 3 个未修复的 Electron 应用:
-  - Motrix (Electron 22.3.7)
-  - QQ (Electron 37.1.0)
-  - Termius (Electron 21.4.4)
-[5:51:55 PM] 其中已在运行且阴影已禁用: Motrix, QQ
-[5:51:57 PM] 已禁用阴影: QQ 窗口 6717
-[5:51:57 PM] 已禁用阴影: Motrix 窗口 6236
-[5:56:55 PM] 启动期结束，轮询间隔切换为 10s
+FOUND: Motrix (Electron 22.3.7)
+  重签名 (添加 allow-dyld entitlement)...
+  OK
+FOUND: QQ (Electron 37.1.0)
+  重签名 (保留 entitlements)...
+  OK
+SKIP: Termius (Electron 21.4.4) — 已注入
+
+完成: 2 个已修补, 1 个已跳过, 0 个失败
 ```
 
-## 副作用
+## App 更新后怎么办
 
-- 受影响应用的窗口阴影会消失（纯视觉差异，不影响功能）
-- 当应用更新到已修复的 Electron 版本后，工具会自动停止对其处理
+应用更新会覆盖 `Info.plist`，移除注入配置。只需重新运行：
+
+```bash
+fix-electron-cornermask-apply.sh
+# 或
+fix-electron-cornermask-apply.sh --force  # 强制重新应用所有
+```
+
+## 关于重签名
+
+对于启用了 hardened runtime 但缺少 `allow-dyld-environment-variables` entitlement 的应用，脚本需要重签名（ad-hoc）。这意味着：
+
+- 原始开发者签名和 Apple 公证会丢失
+- Gatekeeper 可能在首次启动时弹出确认
+- 应用功能不受影响
+- 应用自动更新后需要重新运行脚本
+- 开机自启动不受影响（macOS 通过 bundle ID 识别，不依赖签名身份）
 
 ## 何时可以卸载
 
@@ -146,10 +144,11 @@ fix-electron-windowserver
 | 38.x | ≥ 38.2.0 |
 | 39.x+ | 全部已修复 |
 
+卸载前先移除注入：`fix-electron-cornermask-apply.sh --remove`，然后 `make uninstall`。
+
 ## 致谢
 
 - [@avarayr](https://github.com/avarayr) 发现根因并提交 [PR #48376](https://github.com/electron/electron/pull/48376)
-- [@fredizzimo](https://github.com/fredizzimo) 协助调试
 - Electron 维护团队快速合并和 backport
 
 ## License

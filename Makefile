@@ -1,46 +1,35 @@
-PREFIX ?= /usr/local
-BINARY = fix-electron-windowserver
-LAUNCHAGENT_DIR = $(HOME)/Library/LaunchAgents
-LAUNCHAGENT_LABEL = com.user.fix-electron-windowserver
-LAUNCHAGENT_PLIST = $(LAUNCHAGENT_DIR)/$(LAUNCHAGENT_LABEL).plist
-LOG_PATH = $(HOME)/Library/Logs/fix-electron-windowserver.log
+DYLIB = fix-electron-cornermask.dylib
+PREFIX ?= $(HOME)/.local
 
-.PHONY: build install uninstall start stop restart status log clean
+.PHONY: build install uninstall apply status clean
 
 build:
-	swiftc -O -o $(BINARY) Sources/main.swift
+	clang -dynamiclib -framework Foundation -arch arm64 -Os \
+		-o $(DYLIB) fix-electron-cornermask.m
+	codesign -s - $(DYLIB)
 
 install: build
 	@mkdir -p $(PREFIX)/bin
-	cp $(BINARY) $(PREFIX)/bin/$(BINARY)
-	@mkdir -p $(LAUNCHAGENT_DIR)
-	@sed -e 's|__BINARY__|$(PREFIX)/bin/$(BINARY)|g' \
-	     -e 's|__LOG_PATH__|$(LOG_PATH)|g' \
-	     -e 's|__LABEL__|$(LAUNCHAGENT_LABEL)|g' \
-	     launchagent.plist.template > $(LAUNCHAGENT_PLIST)
-	launchctl load $(LAUNCHAGENT_PLIST)
-	@echo "已安装并启动 $(LAUNCHAGENT_LABEL)"
-	@echo "日志: $(LOG_PATH)"
+	cp $(DYLIB) $(PREFIX)/bin/$(DYLIB)
+	cp fix-electron-cornermask.m $(PREFIX)/bin/fix-electron-cornermask.m
+	cp fix-electron-cornermask-apply.sh $(PREFIX)/bin/fix-electron-cornermask-apply.sh
+	chmod +x $(PREFIX)/bin/fix-electron-cornermask-apply.sh
+	@echo ""
+	@echo "已安装到 $(PREFIX)/bin/"
+	@echo "运行 'make apply' 或 'fix-electron-cornermask-apply.sh' 应用补丁"
+
+apply: install
+	$(PREFIX)/bin/fix-electron-cornermask-apply.sh
 
 uninstall:
-	-launchctl unload $(LAUNCHAGENT_PLIST) 2>/dev/null
-	-rm -f $(LAUNCHAGENT_PLIST)
-	-rm -f $(PREFIX)/bin/$(BINARY)
+	$(PREFIX)/bin/fix-electron-cornermask-apply.sh --remove 2>/dev/null || true
+	rm -f $(PREFIX)/bin/$(DYLIB)
+	rm -f $(PREFIX)/bin/fix-electron-cornermask.m
+	rm -f $(PREFIX)/bin/fix-electron-cornermask-apply.sh
 	@echo "已卸载"
 
-start:
-	launchctl load $(LAUNCHAGENT_PLIST)
-
-stop:
-	launchctl unload $(LAUNCHAGENT_PLIST)
-
-restart: stop start
-
 status:
-	@launchctl list | grep $(LAUNCHAGENT_LABEL) || echo "未运行"
-
-log:
-	@tail -f $(LOG_PATH)
+	$(PREFIX)/bin/fix-electron-cornermask-apply.sh --dry-run
 
 clean:
-	rm -f $(BINARY)
+	rm -f $(DYLIB)

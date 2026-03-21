@@ -1,4 +1,5 @@
-fix-electron-windowserver
+*.dylib
 *.log
 .DS_Store
 .build/
+.worktrees/
