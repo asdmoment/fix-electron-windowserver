@@ -116,14 +116,17 @@ SKIP: Termius (Electron 21.4.4) — 已注入
 完成: 2 个已修补, 1 个已跳过, 0 个失败
 ```
 
-## App 更新后怎么办
+## 何时需要重新运行
 
-应用更新会覆盖 `Info.plist`，移除注入配置。只需重新运行：
+本工具没有后台进程或开机自启动，修改一次 `Info.plist` 即可持久生效。以下情况需要重新运行 `fix-electron`：
+
+- **Electron 应用更新后** — 更新会覆盖 `Info.plist`，注入配置丢失
+- **安装了新的 Electron 应用后** — 脚本每次运行时扫描 `/Applications` 全量检测
 
 ```bash
 fix-electron
 # 或
-fix-electron --force  # 强制重新应用所有
+fix-electron --force  # 强制重新应用所有（包括已注入的）
 ```
 
 ## 关于重签名
