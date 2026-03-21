@@ -40,11 +40,14 @@ Electron 的 `ElectronNSWindow` 覆写了私有 API `_cornerMask`（用于自定
 
 ## 另一个独立的 Tahoe 卡顿问题
 
-macOS 26 Tahoe 还存在另一条与本项目 **无关** 的卡顿问题：`NSAutoFillHeuristicController` 可能在长时间运行后导致 Chrome、Zed、Ghostty、VS Code 等文本密集应用逐渐变卡。
+macOS 26 Tahoe 还存在另一条与本项目 **无关** 的卡顿问题：`NSAutoFillHeuristicController` 在长时间运行后导致 Chrome、Zed、Ghostty、VS Code、iTerm2、Kitty、Alacritty 等文本密集应用逐渐变卡（CPU 单核 100%）。
+
+**截至 macOS 26.4 (25E241)，Apple 仍未修复此 bug。** Ghostty、Zed、Kitty、iTerm2 等应用已各自在代码中加入 workaround。如果你使用的应用没有内置 workaround，需要手动设置全局开关。
 
 **参考：**
-- [zed-industries/zed#33182 comment 3289846957](https://github.com/zed-industries/zed/issues/33182#issuecomment-3289846957)
-- [ghostty-org/ghostty#8625](https://github.com/ghostty-org/ghostty/pull/8625)
+- [ghostty-org/ghostty#8625](https://github.com/ghostty-org/ghostty/pull/8625) — Ghostty 的 workaround，被多个项目引用
+- [zed-industries/zed#33182](https://github.com/zed-industries/zed/issues/33182)
+- [alacritty/alacritty#8696](https://github.com/alacritty/alacritty/issues/8696)
 
 **全局 workaround：**
 
@@ -52,7 +55,7 @@ macOS 26 Tahoe 还存在另一条与本项目 **无关** 的卡顿问题：`NSAu
 defaults write -g NSAutoFillHeuristicControllerEnabled -bool false
 ```
 
-写入一次即可持久生效。建议执行后注销或重启，让新会话生效。可能影响自动填充体验。
+写入一次即可持久生效。建议执行后注销或重启。副作用：可能影响短信验证码、密码等自动填充。
 
 恢复默认：`defaults delete -g NSAutoFillHeuristicControllerEnabled`
 
@@ -79,20 +82,20 @@ make install PREFIX=/usr/local
 
 ## 使用
 
+安装后可直接用 `fix-electron` 命令：
+
 ```bash
-# 扫描未修复的 Electron 应用（不修改）
-make status
+fix-electron              # 扫描并修补所有未修复的 Electron 应用
+fix-electron --dry-run    # 仅扫描，不修改
+fix-electron --force      # 强制重新应用（app 更新后使用）
+fix-electron --remove     # 完全移除所有注入
+```
 
-# 应用补丁（扫描 + 注入 + 重签名）
-make apply
+也可通过 Makefile：
 
-# 强制重新应用（app 更新后使用）
-fix-electron-cornermask-apply.sh --force
-
-# 完全移除所有注入
-fix-electron-cornermask-apply.sh --remove
-
-# 卸载工具
+```bash
+make apply    # 等同于 fix-electron
+make status   # 等同于 fix-electron --dry-run
 make uninstall
 ```
 
@@ -118,9 +121,9 @@ SKIP: Termius (Electron 21.4.4) — 已注入
 应用更新会覆盖 `Info.plist`，移除注入配置。只需重新运行：
 
 ```bash
-fix-electron-cornermask-apply.sh
+fix-electron
 # 或
-fix-electron-cornermask-apply.sh --force  # 强制重新应用所有
+fix-electron --force  # 强制重新应用所有
 ```
 
 ## 关于重签名
@@ -144,7 +147,7 @@ fix-electron-cornermask-apply.sh --force  # 强制重新应用所有
 | 38.x | ≥ 38.2.0 |
 | 39.x+ | 全部已修复 |
 
-卸载前先移除注入：`fix-electron-cornermask-apply.sh --remove`，然后 `make uninstall`。
+卸载前先移除注入：`fix-electron --remove`，然后 `make uninstall`。
 
 ## 致谢
 

@@ -14,9 +14,10 @@ install: build
 	cp fix-electron-cornermask.m $(PREFIX)/bin/fix-electron-cornermask.m
 	cp fix-electron-cornermask-apply.sh $(PREFIX)/bin/fix-electron-cornermask-apply.sh
 	chmod +x $(PREFIX)/bin/fix-electron-cornermask-apply.sh
+	ln -sf $(PREFIX)/bin/fix-electron-cornermask-apply.sh $(PREFIX)/bin/fix-electron
 	@echo ""
 	@echo "已安装到 $(PREFIX)/bin/"
-	@echo "运行 'make apply' 或 'fix-electron-cornermask-apply.sh' 应用补丁"
+	@echo "运行 'fix-electron' 或 'make apply' 应用补丁"
 
 apply: install
 	$(PREFIX)/bin/fix-electron-cornermask-apply.sh
@@ -26,6 +27,7 @@ uninstall:
 	rm -f $(PREFIX)/bin/$(DYLIB)
 	rm -f $(PREFIX)/bin/fix-electron-cornermask.m
 	rm -f $(PREFIX)/bin/fix-electron-cornermask-apply.sh
+	rm -f $(PREFIX)/bin/fix-electron
 	@echo "已卸载"
 
 status:
