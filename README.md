@@ -4,7 +4,7 @@
 
 ## 问题背景
 
-macOS 26 Tahoe 改变了 WindowServer 对窗口 corner mask 的处理方式。AppKit 通过**方法身份检查（method identity check）**决定是否缓存窗口圆角遮罩：
+macOS 26 Tahoe 改变了 WindowServer 对窗口 corner mask 的处理方式。AppKit 通过**方法身份检查(method identity check)**决定是否缓存窗口圆角遮罩：
 
 - 系统默认实现 → 使用共享缓存，mask 视为静态
 - 子类覆写（即使只是调用 super）→ 标记为自定义，**每个窗口每帧重新渲染** → 持续高负载
@@ -31,12 +31,6 @@ Electron 的 `ElectronNSWindow` 覆写了私有 API `_cornerMask`（用于自定
 4. 对非 Electron 进程、已修复版本、Chrome 浏览器完全无操作
 
 注入方式是修改每个未修复 Electron 应用的 `Info.plist`，添加 `LSEnvironment.DYLD_INSERT_LIBRARIES`。对于启用了 hardened runtime 但缺少 `allow-dyld-environment-variables` entitlement 的应用，脚本会自动提取现有 entitlements、添加该权限并重签名。
-
-与之前基于 `CGSSetWindowShadowAndRimParameters` 的外部阴影禁用方案不同，本方案：
-- **从根源修复**：移除 `_cornerMask` override，而不是试图关闭阴影
-- **窗口阴影保留**：不影响视觉效果
-- **无需常驻守护进程**：修改一次 Info.plist 即可持久生效，无需轮询
-- **精确控制**：仅影响未修复的 Electron 应用
 
 ## 另一个独立的 Tahoe 卡顿问题
 
