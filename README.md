@@ -4,7 +4,7 @@
 
 ## 问题背景
 
-macOS 26 Tahoe 改变了 WindowServer 对窗口 corner mask 的处理方式。AppKit 通过**方法身份检查(method identity check)**决定是否缓存窗口圆角遮罩：
+macOS 26 Tahoe 改变了 WindowServer 对窗口 corner mask 的处理方式。AppKit 通过 **方法身份检查(method identity check)** 决定是否缓存窗口圆角遮罩：
 
 - 系统默认实现 → 使用共享缓存，mask 视为静态
 - 子类覆写（即使只是调用 super）→ 标记为自定义，**每个窗口每帧重新渲染** → 持续高负载
