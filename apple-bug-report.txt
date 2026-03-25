@@ -1,0 +1,48 @@
+On macOS 26.4 (25E241), WindowServer repeatedly logs "_CGXPackagesSetWindowCo
+  nstraints: Invalid window" in one specific user account, while a newly create
+  d test user on the same machine does not reproduce the issue. After extensive
+   testing, this does not appear to be caused by one single third-party app or
+  one simple user preference file. The issue is still reproducible in Safe Mode
+  , which makes me suspect a system-level bug in WindowServer / SkyLight / View
+  Bridge / Control Center / Notification Center UI infrastructure, with third-p
+  arty apps only acting as triggers.
+
+In Safe Mode, if I do not open apps, the error may not appear immediately. Ho
+  wever, switching focus between apps can trigger it, and apps with dynamic UI
+  are much more likely to reproduce it. The strongest reproducer on my machine
+  is Surge. When Surge is brought to the front, WindowServer soon logs "_CGXPac
+  kagesSetWindowConstraints: Invalid window". At nearly the same time, Surge lo
+  gs an update involving a Control Center auxiliary status item scene ("Aux[1]-
+  NSStatusItemView"), and later its WebContent process logs "Conn 0x0 is not a
+  valid connection ID" immediately before WindowServer logs the same invalid wi
+  ndow error again. This makes it look like a stale or invalid window/connectio
+  n state is being hit during auxiliary scene, NSStatusItem, WebContent, or rem
+  ote view updates.
+
+I can also see related behavior when switching focus to Ghostty. WindowServer
+   routes keyboard focus through "viewbridge-key-window", ViewBridgeAuxiliary c
+  onnections are rapidly created and invalidated, and NSRemoteView deferKeyboar
+  dEventsToParticularWindow appears in the logs. This suggests the problem is n
+  ot limited to Surge, but Surge is the most reliable reproducer. Other apps ap
+  pear to be lighter triggers, while the underlying issue seems to be in the sy
+  stem UI/windowing stack.
+
+I also observed active Control Center / Notification Center / widget state in
+   the affected user session, including Control Center displayable configuratio
+  n, menu bar customization state, live activity state, and Notification Center
+   widget placement state. Because the issue persists in Safe Mode and can be t
+  riggered by multiple apps through similar UI mechanisms, I suspect this is a
+  macOS bug in WindowServer/SkyLight/ViewBridge handling of auxiliary or remote
+   windows, rather than a bug in one app alone.
+
+Expected result: normal app switching, status item updates, widget updates, a
+  nd WebContent/remote view refreshes should not cause WindowServer to repeated
+  ly log "_CGXPackagesSetWindowConstraints: Invalid window".
+
+Actual result: WindowServer repeatedly logs "_CGXPackagesSetWindowConstraints
+  : Invalid window", sometimes roughly once per second, depending on the curren
+  t UI state and which app is frontmost.
+
+Please investigate whether there is a regression in macOS 26.4 related to Win
+  dowServer, SkyLight, ViewBridge, NSRemoteView, Control Center auxiliary scene
+  s, Notification Center widgets, or menu bar status item handling.

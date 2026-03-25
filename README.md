@@ -146,6 +146,56 @@ fix-electron --force  # 强制重新应用所有（包括已注入的）
 
 卸载前先移除注入：`fix-electron --remove`，然后 `make uninstall`。
 
+## 附录：WindowServer `_CGXPackagesSetWindowConstraints: Invalid window` 调查
+
+在调查 Electron GPU 占用问题的过程中，我们在同一台机器上发现了另一个独立的 WindowServer 问题：系统日志中高频刷屏 `_CGXPackagesSetWindowConstraints: Invalid window`，约每秒 2 次。这个问题与 Electron `_cornerMask` bug 无关，但因为都涉及 WindowServer 异常行为，在此一并记录调查过程。
+
+### 现象
+
+- 仅在特定用户账户出现，新建测试用户无此问题
+- 安全模式下仍可复现
+- 错误从登录开始持续存在，不随应用退出而消失
+- Surge 是最强触发器，但非根因
+
+### 根因分析
+
+通过 SkyLight 框架反汇编，定位到错误触发点为 `_WindowSendRightsGrantOfferedNotification`。调用链：
+
+```
+Timer tick → _CGXPackagesSetWindowConstraints → 权限授予 → _WindowSendRightsGrantOfferedNotification → 窗口已销毁 → 报错
+```
+
+进一步调查发现，用户的 `com.apple.spaces.plist` 中存在 4 个「Collapsed Space」幽灵条目，对应已断开的外接显示器（历史上连接过 4 台不同的外接显示器）。WindowServer 在登录时加载这些配置，为幽灵显示器上下文创建窗口约束记录，然后持续尝试管理已销毁的窗口。
+
+### 尝试过的修复方法（均失败）
+
+| 方法 | 结果 |
+|------|------|
+| 清理 spaces.plist 后注销重登 | WindowServer 注销时将内存脏状态写回，覆盖清理 |
+| SLSSpaceDestroy 销毁幽灵 Space | API 返回成功但无实际效果 |
+| SLSRestorePackagesManagementPersistenceData | 只会追加不会替换 |
+| CGDisplayConfig 显示重配置 | 无效果 |
+| 从另一个管理员账户清理 plist + 重启 | 幽灵条目重新生成 |
+| LaunchDaemon 开机前清理 | 同样无效 |
+| 杀进程（NotificationCenter/WindowManager/Dock） | 效果不稳定且不持久 |
+
+### 结论
+
+这是 macOS 26 (Tahoe) WindowServer 的内部 bug。幽灵显示器状态不仅存储在用户可编辑的 plist 中，还缓存在 WindowServer 内部数据库或 CoreGraphics 会话状态中，用户态工具无法触及。该错误仅为日志刷屏，不影响实际功能。等待 Apple 在后续系统更新中修复。
+
+已向 Apple 提交 bug report（见 [`apple-bug-report.txt`](apple-bug-report.txt)）。
+
+### 调查中使用的诊断工具
+
+调查过程中编写了多个 Objective-C 诊断工具（均在 `/tmp` 中临时使用）：
+
+- `probe_ghost_wins.m` — 遍历所有窗口 ID 检测幽灵窗口
+- `find_invalid_wins.m` — 交叉比对 Space 窗口与实际存活窗口
+- `packages_diag2.m` — 导出 Packages 持久化字典
+- `destroy_spaces.m` — 尝试 SLSSpaceDestroy 销毁幽灵 Space
+- `find_skylight.m` — 定位 SkyLight 基址并符号化错误偏移
+- `disasm_error.m` — 映射错误点附近的函数
+
 ## 致谢
 
 - [@avarayr](https://github.com/avarayr) 发现根因并提交 [PR #48376](https://github.com/electron/electron/pull/48376)
