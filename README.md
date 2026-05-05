@@ -30,7 +30,7 @@ Electron 的 `ElectronNSWindow` 覆写了私有 API `_cornerMask`（用于自定
 3. 恢复 AppKit 的缓存优化，WindowServer 不再逐帧重新渲染 corner mask
 4. 对非 Electron 进程、已修复版本、Chrome 浏览器完全无操作
 
-注入方式是修改每个未修复 Electron 应用的 `Info.plist`，添加 `LSEnvironment.DYLD_INSERT_LIBRARIES`。对于启用了 hardened runtime 但缺少 `allow-dyld-environment-variables` entitlement 的应用，脚本会自动提取现有 entitlements、添加该权限并重签名。
+注入方式是修改每个未修复 Electron 应用的 `Info.plist`，添加 `LSEnvironment.DYLD_INSERT_LIBRARIES`，然后 ad-hoc 重签名。重签名分两步完成：先不给 entitlements 地 deep sign 嵌套代码，再只给外层 app 主签名添加过滤后的 entitlements。脚本只保留可安全用于本地签名的 entitlements，并添加 `allow-dyld-environment-variables`；不能保留原开发者 Team ID、keychain access group、app group 等受限 entitlements，否则 macOS 会拒绝启动。
 
 ## 另一个独立的 Tahoe 卡顿问题
 
@@ -79,11 +79,22 @@ make install PREFIX=/usr/local
 安装后可直接用 `fix-electron` 命令：
 
 ```bash
-fix-electron              # 扫描并修补所有未修复的 Electron 应用
-fix-electron --dry-run    # 仅扫描，不修改
-fix-electron --force      # 强制重新应用（app 更新后使用）
-fix-electron --remove     # 完全移除所有注入
+fix-electron                # 默认仅扫描（含 Electron 与原生 _cornerMask override）
+fix-electron --apply        # 仅注入 Electron 应用（默认安全路径）
+fix-electron --dry-run      # 与 --scan-only 同义：报告但不写
+fix-electron --force        # 强制重新应用（app 更新后使用）
+fix-electron --remove       # 完全移除所有注入
+fix-electron --apply-native # 也对非 Electron 但有 _cornerMask override 的原生应用
+                            # 进行 ad-hoc 注入。注意：会剥离原 Team ID 绑定的
+                            # entitlements，可能破坏 helper / 系统扩展，慎用。
 ```
+
+> 通用扫描覆盖范围：脚本会遍历每个 .app 内 `Contents/MacOS`、`Frameworks`、
+> `PlugIns`、`XPCServices`、`Helpers`、`Library` 下的 Mach-O 二进制，先用
+> `strings` 快速筛 `_cornerMask`，再用 `otool -ov` 解析 Objective-C metadata，
+> 仅当存在 `imp` + `name … _cornerMask` 配对（即真正的方法实现而非调用点）时
+> 才视为命中。这样 SwiftUI/AppKit 原生应用（例如 Easydict、CleanMyMac、
+> Parallels Desktop 等）只要直接 override 了 `_cornerMask` 就能被发现。
 
 也可通过 Makefile：
 
@@ -96,18 +107,19 @@ make uninstall
 输出示例：
 
 ```
-fix-electron-cornermask-apply
-  dylib: /Users/you/.local/bin/fix-electron-cornermask.dylib
+fix-cornermask-apply
+  electron dylib: /Users/you/.local/bin/fix-electron-cornermask.dylib
+  generic  dylib: /Users/you/.local/bin/fix-easydict-cornermask.dylib
+  模式: 仅扫描
 
-FOUND: Motrix (Electron 22.3.7)
-  重签名 (添加 allow-dyld entitlement)...
-  OK
-FOUND: QQ (Electron 37.1.0)
-  重签名 (保留 entitlements)...
-  OK
-SKIP: Termius (Electron 21.4.4) — 已注入
+SKIP: aDrive (Electron 24.1.3) — 已注入
+FOUND: CleanMyMac_5 (native, override at: Contents/Frameworks/MainAppUI.framework/Versions/A/MainAppUI)
+  → 将使用 fix-easydict-cornermask.dylib 注入并 ad-hoc 重签名
+SKIP: QQ (Electron 37.1.0) — 已注入
+FOUND: Parallels Desktop (native, override at: Contents/MacOS/Parallels Technical Data Reporter.app/...)
+  → 将使用 fix-easydict-cornermask.dylib 注入并 ad-hoc 重签名
 
-完成: 2 个已修补, 1 个已跳过, 0 个失败
+完成: Electron 注入 0 / 跳过 7；原生 检出 2 / 注入 0 / 跳过 0；失败 0
 ```
 
 ## 何时需要重新运行
@@ -125,13 +137,15 @@ fix-electron --force  # 强制重新应用所有（包括已注入的）
 
 ## 关于重签名
 
-对于启用了 hardened runtime 但缺少 `allow-dyld-environment-variables` entitlement 的应用，脚本需要重签名（ad-hoc）。这意味着：
+脚本修改 `Info.plist` 后必须重签名（ad-hoc），否则资源封印会失效。重签名会过滤掉原开发者签名才能满足的受限 entitlements，只保留本地签名可用的常见权限；嵌套的 dylib、framework、Node addon 会被签名但不会携带 entitlements。这意味着：
 
 - 原始开发者签名和 Apple 公证会丢失
 - Gatekeeper 可能在首次启动时弹出确认
-- 应用功能不受影响
+- 依赖原开发者 Team ID、keychain access group、app group、USB entitlement 等权限的功能可能受影响
 - 应用自动更新后需要重新运行脚本
 - 开机自启动不受影响（macOS 通过 bundle ID 识别，不依赖签名身份）
+
+如果你看到 `adhoc signed but contains restricted entitlements`，说明旧版本脚本或手动重签保留了受限 entitlements。重新运行新版 `fix-electron --force` 可重新生成过滤后的签名；如果仍有问题，重装对应应用可恢复原厂签名。
 
 ## 何时可以卸载
 
